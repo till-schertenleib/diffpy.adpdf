@@ -1,7 +1,7 @@
 Authors
 =======
 
-Simon Billinge, Billinge Group members
+Tieqiong Zhang
 
 Contributors
 ------------

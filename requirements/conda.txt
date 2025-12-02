@@ -1,1 +1,6 @@
 numpy
+scipy
+matplotlib
+diffpy.utils
+diffpy.structure
+diffpy.srfit
