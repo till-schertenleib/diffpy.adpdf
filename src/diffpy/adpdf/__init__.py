@@ -12,7 +12,7 @@
 # See LICENSE.rst for license information.
 #
 ##############################################################################
-""""description""""
+"""description."""
 
 # package version
 from diffpy.adpdf.version import __version__
