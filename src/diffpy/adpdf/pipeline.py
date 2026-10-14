@@ -18,6 +18,7 @@ import xraydb
 @dataclass
 class RefinementConfig:
     # S(Q) construction
+    bkg_poly_type: str = "wls"  # Options: 'wls' or 'getx'
     rpoly: float = 1.0
     hiQ_frac: float = 0.85
     ridge: float = 8e-4
@@ -26,10 +27,10 @@ class RefinementConfig:
     window: str = "lorch"
     kaiser_beta: float = 6.0
     rmin: float = 0.0
-    rmax: float = 20.0
+    rmax: float = 40.0
     dr: float = 0.01
     Qmin: float = 0.7
-    Qmax: Optional[float] = 30.0
+    Qmax: Optional[float] = 19.0
 
     # Outer refinement and early stopping
     n_outer: int = 24
@@ -37,9 +38,25 @@ class RefinementConfig:
     tol_obj: float = 1e-4
 
     # Output directories
-    out_dir: str = "out"
-    fig_dir: str = os.path.join("out", "figures")
-    frame_dir: str = os.path.join("out", "figures", "refine_frames")
+    out_dir: str = (
+        "C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/adpdf_ts-15-3_sn_edge_out"
+    )
+    fig_dir: str = os.path.join(
+        "C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/adpdf_ts-15-3_sn_edge_out",
+        "figures",
+    )
+    frame_dir: str = os.path.join(
+        "C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/adpdf_ts-15-3_sn_edge_out",
+        "figures",
+        "refine_frames",
+    )
+
+    # Initial Parameter Values
+    init_alpha_C: float = 1.0
+    init_alpha_D: float = 0.0
+    init_beta_C: float = 0.0
+    init_beta_D: float = 0.0
+    init_fp_offset: float = 0.0
 
     # Parameter step sizes
     step_rpoly: float = 0.05
@@ -100,6 +117,8 @@ class EdgeModelParams:
     broaden_fwhm_eV: float = 0.0
     peaks: List[Peak] = field(default_factory=list)
     use_chantler_f2_baseline: bool = True
+    experimental_xas_file: Optional[str] = None
+    experimental_xas_shift_eV: float = 0.0
 
 
 def setup_directories(cfg: RefinementConfig):
@@ -201,10 +220,47 @@ class EdgeModel(_BaseEdgeModel):
     def __init__(self, params: EdgeModelParams):
         super().__init__(params)
         self.kk = KKCalcAdapter(params.element)
+        self.exp_energy = None
+        self.exp_fpp = None
+
+        # Properly placed loading logic
+        if self.params.experimental_xas_file:
+            if os.path.isfile(self.params.experimental_xas_file):
+                try:
+                    data = np.loadtxt(self.params.experimental_xas_file)
+                    raw_E = data[:, 0]
+                    if np.nanmax(raw_E) < 1e3:
+                        raw_E *= 1e3
+                    raw_E += float(self.params.experimental_xas_shift_eV)
+
+                    sort_idx = np.argsort(raw_E)
+                    self.exp_energy = raw_E[sort_idx]
+                    self.exp_fpp = data[sort_idx, 1]
+                    print(
+                        f"Loaded experimental XAS from {self.params.experimental_xas_file}"
+                    )
+                except Exception as e:
+                    print(
+                        f"Warning: Failed to load XAS file '{self.params.experimental_xas_file}': {e}"
+                    )
+            else:
+                print(
+                    f"Warning: XAS file '{self.params.experimental_xas_file}' not found. Falling back to Chantler."
+                )
 
     def fpp(self, E: np.ndarray) -> np.ndarray:
         E_eV = self.to_eV(E)
         E_eval = E_eV + float(self.params.dE_eV)
+
+        # Check if experimental XAS was successfully loaded
+        if (
+            getattr(self, "exp_energy", None) is not None
+            and getattr(self, "exp_fpp", None) is not None
+        ):
+            f2 = np.interp(E_eval, self.exp_energy, self.exp_fpp)
+            return float(self.params.scale) * f2
+
+        # Fallback to Chantler baseline
         if self.params.use_chantler_f2_baseline:
             f2 = np.asarray(
                 xraydb.f2_chantler(self.params.element, E_eval), float
@@ -224,6 +280,7 @@ class EdgeModel(_BaseEdgeModel):
                     E_eval, pk.center_eV, pk.fwhm_eV, pk.height
                 )
             f2 = f2 + add
+
         return self.broadening(E_eV, f2, self.params.broaden_fwhm_eV)
 
     def fp(
@@ -252,6 +309,78 @@ class EdgeModel(_BaseEdgeModel):
 # =============================================================================
 # 3. UTILITIES & PIPELINE FUNCTIONS
 # =============================================================================
+
+
+def load_experimental_data(
+    data_path: str, energies_path: Optional[str] = None
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if os.path.isfile(data_path) and data_path.lower().endswith(
+        (".h5", ".hdf5")
+    ):
+        with h5py.File(data_path, "r") as f:
+            data = f["data"]
+            I_raw = np.array(data["iq"])
+            E_raw = np.array(data["energy"])
+            Q = np.array(data["q"])
+        E = E_raw * 1e3 if np.nanmax(E_raw) < 1e3 else E_raw
+        return I_raw, Q, E
+
+    elif os.path.isdir(data_path):
+        if energies_path is None or not os.path.isfile(energies_path):
+            raise FileNotFoundError(
+                f"Could not find an energies text file at '{energies_path}'. "
+                "When loading a directory, you must provide a 1D text file of energies."
+            )
+
+        E_raw = np.loadtxt(energies_path)
+        E = E_raw * 1e3 if np.nanmax(E_raw) < 1e3 else E_raw
+
+        valid_exts = (".iq", ".xy", ".dat", ".xye")
+        files = sorted(
+            [
+                f
+                for f in os.listdir(data_path)
+                if f.lower().endswith(valid_exts)
+                and os.path.isfile(os.path.join(data_path, f))
+            ]
+        )
+
+        if not files:
+            raise ValueError(f"No diffraction files found in '{data_path}'.")
+        if len(files) != len(E):
+            raise ValueError(
+                f"Found {len(files)} patterns but {len(E)} energies."
+            )
+
+        I_list = []
+        Q = None
+        for f in files:
+            d = np.loadtxt(os.path.join(data_path, f))
+            if Q is None:
+                Q = d[:, 0]
+            I_list.append(d[:, 1])
+
+        return np.vstack(I_list), Q, E
+    else:
+        raise FileNotFoundError(f"Path '{data_path}' is invalid.")
+
+
+def load_background(bkg_path: str, target_Q: np.ndarray) -> np.ndarray:
+    """Loads a 1D background pattern and interpolates it onto the experimental
+    Q grid.
+
+    Expects a standard 2-column text file: Q, Intensity.
+    """
+    if not os.path.isfile(bkg_path):
+        raise FileNotFoundError(f"Background file '{bkg_path}' not found.")
+
+    bkg_data = np.loadtxt(bkg_path)
+    Q_bkg = bkg_data[:, 0]
+    I_bkg = bkg_data[:, 1]
+
+    # Interpolate to match the exact Q grid of the sample scans
+    I_bkg_interp = np.interp(target_Q, Q_bkg, I_bkg)
+    return I_bkg_interp
 
 
 def _as_1d(a: np.ndarray) -> np.ndarray:
@@ -339,31 +468,37 @@ def _compute_scattering(
         fr_weights[el] = fr
         f2_weights[el] = fr**2 + fi**2
 
-    fmean_real, fmean_abs2, f_not_sum = (
-        np.zeros((ne, nq), float),
-        np.zeros((ne, nq), float),
-        np.zeros((ne, nq), float),
-    )
+    fmean_real = np.zeros((ne, nq), float)
+    fself = np.zeros((ne, nq), float)
     for el in elements:
         c = float(comp[el])
         fmean_real += c * fr_weights[el]
-        fmean_abs2 += c * f2_weights[el]
-        if el != alpha:
-            f_not_sum += c * fr_weights[el]
-    return fr_weights, f0_map, fmean_real, fmean_abs2, fmean_abs2, f_not_sum
+        fself += c * f2_weights[el]
+
+    fi_alpha = fpp[:, None]
+    fmean_imag = float(comp[alpha]) * fi_alpha * np.ones((1, nq))
+    w_tot = fmean_real**2 + fmean_imag**2
+
+    return fr_weights, fi_alpha, fmean_real, fmean_imag, w_tot, fself
 
 
 def _weights_alpha_not(
     comp: Dict[str, float],
     alpha: str,
     fr_weights: Dict[str, np.ndarray],
+    fi_alpha: np.ndarray,
     fmean_real: np.ndarray,
-    f_not_sum: np.ndarray,
+    fmean_imag: np.ndarray,
+    w_tot: np.ndarray,
 ):
     cA = float(comp[alpha])
+    w_A = cA * (fr_weights[alpha] * fmean_real + fi_alpha * fmean_imag)
     eps = 1e-12
-    a = np.clip(cA * fr_weights[alpha] / (fmean_real + eps), -5.0, 5.0)
-    b = np.clip(f_not_sum / (fmean_real + eps), -5.0, 5.0)
+    a = w_A / (w_tot + eps)
+    b = 1.0 - a
+
+    a = np.clip(a, -5.0, 5.0)
+    b = np.clip(b, -5.0, 5.0)
     return a, b, {"a_min": float(np.nanmin(a)), "a_max": float(np.nanmax(a))}
 
 
@@ -386,19 +521,23 @@ def _build_S_from_raw(
     E_eV: np.ndarray,
     alpha_e: np.ndarray,
     beta_f_e: np.ndarray,
-    fmean_real: np.ndarray,
+    w_tot: np.ndarray,
     fself: np.ndarray,
     rpoly: float,
+    bkg_poly_type: str = "wls",
 ):
     I_raw = np.asarray(I_raw, float)
     E = _as_1d(E_eV)
     Q = _as_1d(Q)
     ne, _ = len(E), len(Q)
 
+    # Apply energy-dependent absorption and fluorescence corrections
     I_corr = I_raw * alpha_e[:, None] + beta_f_e[:, None]
-    S0 = (I_corr - fself) / (fmean_real**2 + 1e-12) + 1.0
 
-    # WLS Fractional Polynomial Fitting
+    # Normalize using the true complex absolute squared average scattering factor
+    S0 = (I_corr - fself) / (w_tot + 1e-12) + 1.0
+
+    # Determine polynomial degree
     xspan = float(Q[-1] - Q[0])
     porder = max(1.0, (rpoly * xspan) / np.pi)
     porderlo, porderhi = int(np.floor(porder)), int(np.ceil(porder))
@@ -408,28 +547,67 @@ def _build_S_from_raw(
         else [porderhi - porder, porder - porderlo]
     )
 
-    weight_power = 4.0
-    W_sqrt = np.sqrt((Q / Q[-1]) ** weight_power)
-
-    Xlo = np.vstack([Q**k for k in range(porderlo + 1)]).T
-    Xhi = np.vstack([Q**k for k in range(porderhi + 1)]).T
-    Xlo_w, Xhi_w = Xlo * W_sqrt[:, None], Xhi * W_sqrt[:, None]
-    XtXlo = Xlo_w.T @ Xlo_w + 1e-12 * np.eye(Xlo_w.shape[1])
-    XtXhi = Xhi_w.T @ Xhi_w + 1e-12 * np.eye(Xhi_w.shape[1])
-
     beta_o = np.zeros_like(S0)
-    for i in range(ne):
-        y = (1.0 - S0[i]) * (fmean_real[i] ** 2)
-        y_w = y * W_sqrt
-        coeff_lo = npl.solve(XtXlo, Xlo_w.T @ y_w)
-        beta_lo = (Xlo @ coeff_lo) / (fmean_real[i] ** 2 + 1e-12)
 
-        if porderlo == porderhi:
-            beta_o[i] = beta_lo
-        else:
-            coeff_hi = npl.solve(XtXhi, Xhi_w.T @ y_w)
-            beta_hi = (Xhi @ coeff_hi) / (fmean_real[i] ** 2 + 1e-12)
-            beta_o[i] = poly_weights[0] * beta_lo + poly_weights[1] * beta_hi
+    # ---------------------------------------------------------
+    # OPTION A: getx style F(Q) polynomial fitting
+    # ---------------------------------------------------------
+    if bkg_poly_type == "getx":
+        # Build F(Q) matrix WITHOUT the constant Q^0 term (forces F(0)=0)
+        Vlo_F = np.vander(Q, porderlo + 1)[:, :-1]
+        Vhi_F = np.vander(Q, porderhi + 1)[:, :-1]
+
+        # Build the exact S(Q) matrix to apply coefficients cleanly
+        Vlo_S = np.vander(Q, porderlo)
+        Vhi_S = np.vander(Q, porderhi)
+
+        for i in range(ne):
+            target = Q * (S0[i] - 1.0)
+
+            # Fit fractional low-order to F(Q)
+            coeffs_lo = npl.lstsq(Vlo_F, target, rcond=None)[0]
+            P_lo_S = np.dot(Vlo_S, coeffs_lo)
+
+            if porderlo == porderhi:
+                P_eval_S = P_lo_S
+            else:
+                # Fit fractional high-order and blend
+                coeffs_hi = npl.lstsq(Vhi_F, target, rcond=None)[0]
+                P_hi_S = np.dot(Vhi_S, coeffs_hi)
+                P_eval_S = poly_weights[0] * P_lo_S + poly_weights[1] * P_hi_S
+
+            beta_o[i] = -P_eval_S
+
+    # ---------------------------------------------------------
+    # OPTION B: Weighted Least Squares on S(Q)
+    # ---------------------------------------------------------
+    elif bkg_poly_type == "wls":
+        weight_power = 4.0
+        W_sqrt = np.sqrt((Q / Q[-1]) ** weight_power)
+
+        Xlo = np.vstack([Q**k for k in range(porderlo + 1)]).T
+        Xhi = np.vstack([Q**k for k in range(porderhi + 1)]).T
+        Xlo_w, Xhi_w = Xlo * W_sqrt[:, None], Xhi * W_sqrt[:, None]
+        XtXlo = Xlo_w.T @ Xlo_w + 1e-12 * np.eye(Xlo_w.shape[1])
+        XtXhi = Xhi_w.T @ Xhi_w + 1e-12 * np.eye(Xhi_w.shape[1])
+
+        for i in range(ne):
+            y = (1.0 - S0[i]) * w_tot[i]
+            y_w = y * W_sqrt
+            coeff_lo = npl.solve(XtXlo, Xlo_w.T @ y_w)
+            beta_lo = (Xlo @ coeff_lo) / (w_tot[i] + 1e-12)
+
+            if porderlo == porderhi:
+                beta_o[i] = beta_lo
+            else:
+                coeff_hi = npl.solve(XtXhi, Xhi_w.T @ y_w)
+                beta_hi = (Xhi @ coeff_hi) / (w_tot[i] + 1e-12)
+                beta_o[i] = (
+                    poly_weights[0] * beta_lo + poly_weights[1] * beta_hi
+                )
+
+    else:
+        raise ValueError(f"Unknown bkg_poly_type: {bkg_poly_type}")
 
     return S0 + beta_o, beta_o
 
@@ -601,7 +779,6 @@ def _plot_frame(
 
 
 def save_results(out: Dict[str, np.ndarray], cfg: RefinementConfig):
-    """Save the output PDFs to .cgr files and export a final summary plot."""
     r = out["r"]
     np.savetxt(
         os.path.join(cfg.out_dir, "G_alpha.cgr"),
@@ -619,19 +796,34 @@ def save_results(out: Dict[str, np.ndarray], cfg: RefinementConfig):
         header="r G_tot",
     )
 
-    # Plot the full r-range to preserve diagnostic low-r ripples
+    q = out["Q"]
+    np.savetxt(
+        os.path.join(cfg.out_dir, "S_alpha.csq"),
+        np.column_stack([q, out["S_alpha"]]),
+        header="Q S_alpha",
+    )
+    np.savetxt(
+        os.path.join(cfg.out_dir, "S_not.csq"),
+        np.column_stack([q, out["S_not"]]),
+        header="Q S_not",
+    )
+    np.savetxt(
+        os.path.join(cfg.out_dir, "S_tot.csq"),
+        np.column_stack([q, out["S_tot"]]),
+        header="Q S_tot",
+    )
+
     plt.figure()
     plt.plot(r, out["G_alpha"], "r", label="G_alpha (resonant)")
     plt.plot(r, out["G_not"], "g", label="G_not (non-resonant)")
     plt.plot(r, out["G_tot"], "b", label="G_tot (total/mean)")
-
     plt.xlabel("r (Å)")
     plt.ylabel("G(r)")
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(cfg.fig_dir, "final_results.png"), dpi=150)
     plt.close()
-    print("Final .cgr files and full-range comparison plot saved.")
+    print("Final .cgr files, .csq files, and comparison plot saved.")
 
 
 def _objective(
@@ -671,24 +863,27 @@ def reconstruct_partials_and_pdfs(
     window="lorch",
     kaiser_beta=6.0,
     fp_offset=0.0,
+    bkg_poly_type="getx",
 ):
     Q = _as_1d(Q)
     E = _as_1d(E_eV)
     I_raw = np.asarray(I_raw, float)
-    frw, f0_map, fmean_real, fmean_abs2, fself, f_not_sum = (
-        _compute_scattering(
-            elements, comp, alpha, Q, E, edge_model, fp_offset=fp_offset
-        )
+    frw, fi_alpha, fmean_real, fmean_imag, w_tot, fself = _compute_scattering(
+        elements, comp, alpha, Q, E, edge_model, fp_offset=fp_offset
     )
-    a, b, wb = _weights_alpha_not(comp, alpha, frw, fmean_real, f_not_sum)
+
+    a, b, wb = _weights_alpha_not(
+        comp, alpha, frw, fi_alpha, fmean_real, fmean_imag, w_tot
+    )
 
     if Qmax is None:
         Qmax = float(Q.max())
     mask_Q = (Q >= Qmin) & (Q <= Qmax)
     Q_use = Q[mask_Q]
 
+    # Pass w_tot here instead of fmean_real
     S_meas_all, beta_o_all = _build_S_from_raw(
-        I_raw, Q, E, alpha_e, beta_e, fmean_real, fself, rpoly
+        I_raw, Q, E, alpha_e, beta_e, w_tot, fself, rpoly, bkg_poly_type
     )
     S_meas = S_meas_all[:, mask_Q]
     a = a[:, mask_Q]
@@ -723,15 +918,17 @@ def run_adpdf_with_refinement(
     comp,
     alpha,
     edge_model,
-    alpha_C=1.0,
-    alpha_D=0.0,
-    beta_C=0.0,
-    beta_D=0.0,
-    fp_offset=0.0,
     cfg=None,
 ):
     if cfg is None:
         cfg = RefinementConfig()
+
+    alpha_C = cfg.init_alpha_C
+    alpha_D = cfg.init_alpha_D
+    beta_C = cfg.init_beta_C
+    beta_D = cfg.init_beta_D
+    fp_offset = cfg.init_fp_offset
+
     Q = _as_1d(Q)
     E = _as_1d(E_eV)
     I_raw = np.asarray(I_raw, float)
@@ -771,6 +968,7 @@ def run_adpdf_with_refinement(
             window=cfg.window,
             kaiser_beta=cfg.kaiser_beta,
             fp_offset=fp_offset,
+            bkg_poly_type=cfg.bkg_poly_type,
         )
         return (
             out,
@@ -854,22 +1052,25 @@ def run_adpdf_with_refinement(
             fp_offset += d
 
     best_obj = obj
+    # active_params = ["rpoly", "dE_eV", "scale", "alpha_C", "alpha_D", "beta_C", "beta_D"]
+    active_params = [
+        "rpoly",
+        "dE_eV",
+        "scale",
+        "alpha_D",
+        "beta_C",
+        "beta_D",
+    ]  # alpha_C (and possibly alpha_D) should be excluded for very dilute resonant scatterer
+
+    # If using theoretical Chantler tables, allow tuning the edge shape
+    if getattr(edge_model, "exp_energy", None) is None:
+        active_params.extend(["fpp_offset", "fp_offset", "broaden_fwhm_eV"])
+
     for it in range(1, cfg.n_outer + 1):
         cycle_improved = False
         start_obj = best_obj
 
-        for name in [
-            "rpoly",
-            "dE_eV",
-            "scale",
-            "fpp_offset",
-            "fp_offset",
-            "broaden_fwhm_eV",
-            "alpha_C",
-            "alpha_D",
-            "beta_C",
-            "beta_D",
-        ]:
+        for name in active_params:
             param_improved = False
             for sgn in (+1, -1):
                 tweak(name, sgn * steps[name])
@@ -930,33 +1131,74 @@ def run_adpdf_with_refinement(
 def main():
     # 1. Initialize Configuration
     cfg = RefinementConfig()
+    cfg.bkg_poly_type = "wls"
+    cfg.rpoly = 1.0
+    cfg.init_alpha_C = 0.2
+    cfg.init_alpha_D = 0.05
+    cfg.init_beta_C = 0.05
+    cfg.init_beta_D = 0.1  # Set to 0.1 as you had previously
+    cfg.init_fp_offset = 0.0
+    cfg.ridge = 8e-3
     setup_directories(cfg)
 
-    # 2. Load Data
-    # Make sure this points to the correct local file path
-    print("Loading data...")
+    # 2. Load Experimental Scattering Data
+    data_path = "C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/ts-15-3-1200_sn_fine_spikes_removed"
+    energies_path = "C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/ts-15-3-1200_sn_energies.txt"
+
+    print(f"Loading data from '{data_path}'...")
     try:
-        with h5py.File("data/ESRF.h5", "r") as f:
-            data = f["data"]
-            I_raw = np.array(data["iq"])
-            E = np.array(data["energy"]) * 1e3
-            Q = np.array(data["q"])
-    except FileNotFoundError:
-        print("Data file 'data/ESRF.h5' not found. Please verify the path.")
+        I_raw, Q, E = load_experimental_data(data_path, energies_path)
+    except Exception as e:
+        print(f"Error loading data: {e}")
         return
 
-    # 3. Setup Elements & Edge Model
-    elements = ["Ba", "Bi", "O"]
-    comp = {"Ba": 1 / 5, "Bi": 1 / 5, "O": 3 / 5}
-    alpha = "Bi"
+    # BACKGROUND SUBTRACTION ---
+    bkg_file = None  # e.g., "data/empty_capillary.xy"
+    bkg_scale = 1.0  # Tweak this to perfectly strip the container/background
+
+    if bkg_file is not None:
+        if os.path.isfile(bkg_file):
+            print(
+                f"Subtracting background from '{bkg_file}' (scale={bkg_scale})..."
+            )
+            try:
+                I_bkg = load_background(bkg_file, Q)
+                # Subtract the scaled background from every single energy row
+                I_raw = I_raw - (bkg_scale * I_bkg[None, :])
+            except Exception as e:
+                print(f"Warning: Failed to process background file: {e}")
+        else:
+            print(
+                f"Warning: Background file '{bkg_file}' not found. Skipping subtraction."
+            )
+    # -----------------------------------
+
+    # Setup Elements & Edge Model
+    # elements = ["Ba", "Bi", "O"]
+    # comp = {"Ba": 1 / 5, "Bi": 1 / 5, "O": 3 / 5}
+    # alpha = "Bi"
+
+    elements = ["Sr", "Ru", "Sn", "O"]
+    comp = {"Sr": 1 / 5, "Ru": 0.04 / 5, "Sn": 0.96 / 5, "O": 3 / 5}
+    alpha = "Sn"
+
+    # for Bi ESRF
+    # params = EdgeModelParams(
+    #     element=alpha,
+    #     e0_keV=90.526,
+    #     scale=0.35,
+    #     fpp_offset=-0.2,
+    #     broaden_fwhm_eV=15.0,
+    #     peaks=[Peak(center_eV=90.526e3 + 180, fwhm_eV=3.0, height=0.3)],
+    # )
+    # edge_model = EdgeModel(params)
 
     params = EdgeModelParams(
         element=alpha,
         e0_keV=90.526,
         scale=0.35,
-        fpp_offset=-0.2,
-        broaden_fwhm_eV=15.0,
-        peaks=[Peak(center_eV=90.526e3 + 180, fwhm_eV=3.0, height=0.3)],
+        experimental_xas_file="C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/xas/ts-15-3-1200_Sn_exafs_T_merge.dat",  # "data/measured_xas.txt"
+        experimental_xas_shift_eV=760.4,
     )
     edge_model = EdgeModel(params)
 
@@ -973,7 +1215,6 @@ def main():
         comp=comp,
         alpha=alpha,
         edge_model=edge_model,
-        beta_D=0.1,
         cfg=cfg,
     )
 
