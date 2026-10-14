@@ -1,5 +1,5 @@
 numpy>=2.0
 matplotlib
 h5py
-kkcalc
+kkcalc>=0.8.4
 xraydb
