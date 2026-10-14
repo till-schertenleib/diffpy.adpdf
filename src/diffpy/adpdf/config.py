@@ -1,8 +1,10 @@
 """Configuration dataclasses for the AD-PDF pipeline."""
 
 import os
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+import tomllib
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 
 @dataclass
@@ -27,19 +29,8 @@ class RefinementConfig:
     plot_every: int = 2
     tol_obj: float = 1e-4
 
-    # Output directories
-    out_dir: str = (
-        "C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/adpdf_ts-15-3_sn_edge_out"
-    )
-    fig_dir: str = os.path.join(
-        "C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/adpdf_ts-15-3_sn_edge_out",
-        "figures",
-    )
-    frame_dir: str = os.path.join(
-        "C:/Users/tills/PDF/danmax_maxiv/ts-15-3-1200_resonant/adpdf_ts-15-3_sn_edge_out",
-        "figures",
-        "refine_frames",
-    )
+    # Output directory (figures go to out_dir/figures)
+    out_dir: str = "adpdf_out"
 
     # Initial Parameter Values
     init_alpha_C: float = 1.0
@@ -81,6 +72,14 @@ class RefinementConfig:
     birth_every: int = 4
     death_height_thresh: float = 1e-2
 
+    @property
+    def fig_dir(self) -> str:
+        return os.path.join(self.out_dir, "figures")
+
+    @property
+    def frame_dir(self) -> str:
+        return os.path.join(self.out_dir, "figures", "refine_frames")
+
 
 @dataclass
 class RefinementHistory:
@@ -109,3 +108,108 @@ class EdgeModelParams:
     use_chantler_f2_baseline: bool = True
     experimental_xas_file: Optional[str] = None
     experimental_xas_shift_eV: float = 0.0
+
+
+@dataclass
+class DataConfig:
+    path: str
+    energies: Optional[str] = None
+    background: Optional[str] = None
+    background_scale: float = 1.0
+
+
+@dataclass
+class SampleConfig:
+    elements: List[str]
+    composition: Dict[str, float]
+    resonant: str
+
+
+@dataclass
+class PipelineConfig:
+    data: DataConfig
+    sample: SampleConfig
+    edge: EdgeModelParams
+    refinement: RefinementConfig = field(default_factory=RefinementConfig)
+
+
+def _build(cls, section: Optional[Dict[str, Any]], name: str):
+    if section is None:
+        raise ValueError(f"Missing required [{name}] section.")
+    allowed = {f.name for f in fields(cls)}
+    unknown = set(section) - allowed
+    if unknown:
+        raise ValueError(
+            f"Unknown key(s) in [{name}]: {', '.join(sorted(unknown))}"
+        )
+    try:
+        return cls(**section)
+    except TypeError as e:
+        raise ValueError(f"Invalid [{name}] section: {e}") from None
+
+
+def _resolve(base: Path, p: Optional[str]) -> Optional[str]:
+    if p is None:
+        return None
+    p = Path(p).expanduser()
+    return str(p if p.is_absolute() else base / p)
+
+
+def load_config(path: Union[str, Path]) -> PipelineConfig:
+    """Read a TOML run configuration.
+
+    Relative paths in the file are resolved against the folder that
+    contains the TOML file.
+    """
+    path = Path(path)
+    base = path.resolve().parent
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+
+    unknown = set(raw) - {"data", "sample", "edge", "refinement", "output"}
+    if unknown:
+        raise ValueError(f"Unknown section(s): {', '.join(sorted(unknown))}")
+
+    data = _build(DataConfig, raw.get("data"), "data")
+    data.path = _resolve(base, data.path)
+    data.energies = _resolve(base, data.energies)
+    data.background = _resolve(base, data.background)
+
+    sample = _build(SampleConfig, raw.get("sample"), "sample")
+    if set(sample.composition) != set(sample.elements):
+        raise ValueError(
+            "[sample] composition keys must match elements: "
+            f"{sorted(sample.composition)} vs {sorted(sample.elements)}"
+        )
+    if sample.resonant not in sample.elements:
+        raise ValueError(
+            f"[sample] resonant element '{sample.resonant}' "
+            "is not in elements."
+        )
+
+    edge_raw = dict(raw.get("edge", {}))
+    edge_raw.setdefault("element", sample.resonant)
+    peaks = edge_raw.pop("peaks", [])
+    edge = _build(EdgeModelParams, edge_raw, "edge")
+    edge.peaks = [_build(Peak, pk, "edge.peaks") for pk in peaks]
+    if edge.element != sample.resonant:
+        raise ValueError(
+            f"[edge] element '{edge.element}' differs from [sample] "
+            f"resonant element '{sample.resonant}'."
+        )
+    edge.experimental_xas_file = _resolve(base, edge.experimental_xas_file)
+
+    refinement = _build(
+        RefinementConfig, raw.get("refinement", {}), "refinement"
+    )
+    output = raw.get("output", {})
+    unknown = set(output) - {"out_dir"}
+    if unknown:
+        raise ValueError(
+            f"Unknown key(s) in [output]: {', '.join(sorted(unknown))}"
+        )
+    refinement.out_dir = _resolve(
+        base, output.get("out_dir", refinement.out_dir)
+    )
+
+    return PipelineConfig(data, sample, edge, refinement)

@@ -1,0 +1,42 @@
+# Example adpdf run configuration: Sn K-edge, SrSnO3 with 4% Ru.
+# Run with:  adpdf examples/sn_edge_example.toml
+#
+# Relative paths are resolved against the folder containing this file.
+# Any key left out falls back to the default in diffpy.adpdf.config.
+
+[data]
+# Either an HDF5 file (with data/iq, data/energy, data/q) or a folder of
+# 2-column (Q, I) patterns (.xy/.iq/.dat/.xye). Patterns are matched to
+# energies in sorted filename order.
+path = "path/to/sn_patterns/"
+energies = "path/to/sn_energies.txt"  # needed when path is a folder
+# background = "path/to/empty_capillary.xy"
+# background_scale = 1.0
+
+[sample]
+elements = ["Sr", "Ru", "Sn", "O"]
+composition = { Sr = 0.2, Ru = 0.008, Sn = 0.192, O = 0.6 }
+resonant = "Sn"
+
+[edge]
+# element defaults to [sample] resonant
+e0_keV = 90.526
+scale = 0.35
+experimental_xas_file = "path/to/Sn_exafs_T_merge.dat"
+experimental_xas_shift_eV = 760.4
+
+[refinement]
+bkg_poly_type = "wls"  # "wls" or "getx"
+rpoly = 1.0
+ridge = 8e-3
+init_alpha_C = 0.2
+init_alpha_D = 0.05
+init_beta_C = 0.05
+init_beta_D = 0.1
+init_fp_offset = 0.0
+# Qmin = 0.7
+# Qmax = 19.0
+# n_outer = 24
+
+[output]
+out_dir = "adpdf_out/sn_edge"
