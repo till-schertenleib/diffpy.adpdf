@@ -1,0 +1,33 @@
+# Example adpdf run configuration: Bi K-edge, BaBiO3 (ESRF data).
+# Run with:  adpdf examples/bi_edge_example.toml
+#
+# Relative paths are resolved against the folder containing this file.
+# Any key left out falls back to the default in diffpy.adpdf.config.
+
+[data]
+path = "data/ESRF.h5"
+
+[sample]
+elements = ["Ba", "Bi", "O"]
+composition = { Ba = 0.2, Bi = 0.2, O = 0.6 }
+resonant = "Bi"
+
+[edge]
+# No experimental XAS: f'' comes from Chantler tables plus the edge model.
+e0_keV = 90.526
+scale = 0.35
+fpp_offset = -0.2
+broaden_fwhm_eV = 15.0
+peaks = [{ center_eV = 90706.0, fwhm_eV = 3.0, height = 0.3 }]
+
+[refinement]
+bkg_poly_type = "wls"
+rpoly = 1.0
+ridge = 8e-3
+init_alpha_C = 0.2
+init_alpha_D = 0.05
+init_beta_C = 0.05
+init_beta_D = 0.1
+
+[output]
+out_dir = "adpdf_out/bi_edge"

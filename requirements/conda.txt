@@ -1,6 +1,5 @@
-numpy
-scipy
+numpy>=2.0
 matplotlib
-diffpy.utils
-diffpy.structure
-diffpy.srfit
+h5py
+kkcalc>=0.8.4
+xraydb

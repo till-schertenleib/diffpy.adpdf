@@ -33,6 +33,9 @@ classifiers = [
         'Topic :: Scientific/Engineering :: Chemistry',
 ]
 
+[project.scripts]
+adpdf = "diffpy.adpdf.pipeline:main"
+
 [project.urls]
 Homepage = "https://github.com/diffpy/diffpy.adpdf/"
 Issues = "https://github.com/diffpy/diffpy.adpdf/issues/"
