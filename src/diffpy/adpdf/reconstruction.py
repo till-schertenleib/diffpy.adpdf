@@ -27,7 +27,7 @@ def build_S_from_raw(
     # Apply energy-dependent absorption and fluorescence corrections
     I_corr = I_raw * alpha_e[:, None] + beta_f_e[:, None]
 
-    # Normalize using the true complex absolute squared average scattering factor
+    # Normalize using the complex absolute squared average scattering factor
     S0 = (I_corr - fself) / (w_tot + 1e-12) + 1.0
 
     # Determine polynomial degree
@@ -125,6 +125,9 @@ def reconstruct_Salpha_Snot(
     ridge: float,
 ):
     S_meas = np.asarray(S_meas, float)
+    # TODO(physics): hardcoded low-Q flattening (first 40 points set to
+    # point 41, skipping 40). This modifies the caller's array in place, so
+    # S_tot (= S_meas[0] in reconstruct_partials_and_pdfs) is flattened too.
     for i in range(S_meas.shape[0]):
         S_meas[i][:40] = S_meas[i][41]
     ne, nq = S_meas.shape
@@ -137,6 +140,7 @@ def reconstruct_Salpha_Snot(
         Aj, yj = np.stack([a[:, j], b[:, j]], axis=1), S_meas[:, j : j + 1]
         s = npl.svd(Aj, compute_uv=False)
         cond = (s[0] / s[-1]) if (s[-1] > 0) else np.inf
+        # TODO(physics): heuristic anchor strength and condition threshold
         anchor = 5.0 if (not np.isfinite(cond) or cond > 1e6) else 0.0
         if anchor > 0.0:
             bad_cols += 1
@@ -181,7 +185,7 @@ def reconstruct_partials_and_pdfs(
     window="lorch",
     kaiser_beta=6.0,
     fp_offset=0.0,
-    bkg_poly_type="getx",
+    bkg_poly_type="wls",
 ):
     Q = as_1d(Q)
     E = as_1d(E_eV)

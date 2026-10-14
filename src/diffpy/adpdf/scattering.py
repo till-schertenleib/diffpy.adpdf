@@ -73,6 +73,7 @@ def weights_alpha_not(
     a = w_A / (w_tot + eps)
     b = 1.0 - a
 
+    # TODO(physics): heuristic clip of the channel weights
     a = np.clip(a, -5.0, 5.0)
     b = np.clip(b, -5.0, 5.0)
     return a, b, {"a_min": float(np.nanmin(a)), "a_max": float(np.nanmax(a))}

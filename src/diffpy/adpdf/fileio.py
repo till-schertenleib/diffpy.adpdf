@@ -27,13 +27,16 @@ def load_experimental_data(
         if energies_path is None or not os.path.isfile(energies_path):
             raise FileNotFoundError(
                 f"Could not find an energies text file at '{energies_path}'. "
-                "When loading a directory, you must provide a 1D text file of energies."
+                "When loading a directory, you must provide a 1D text file "
+                "of energies."
             )
 
         E_raw = np.loadtxt(energies_path)
         E = E_raw * 1e3 if np.nanmax(E_raw) < 1e3 else E_raw
 
         valid_exts = (".iq", ".xy", ".dat", ".xye")
+        # NOTE: patterns are paired with energies in plain string order of
+        # their filenames, so e.g. "9999.0.xy" sorts after "10000.0.xy".
         files = sorted(
             [
                 f
@@ -121,3 +124,14 @@ def save_results(out: Dict[str, np.ndarray], cfg: RefinementConfig):
         np.column_stack([q, out["S_tot"]]),
         header="Q S_tot",
     )
+
+
+def save_refined_params(
+    params: Dict[str, float], obj: float, cfg: RefinementConfig
+):
+    """Write the final refined parameters and objective value."""
+    path = os.path.join(cfg.out_dir, "refined_params.txt")
+    with open(path, "w") as f:
+        f.write(f"objective {obj:.10g}\n")
+        for name, value in params.items():
+            f.write(f"{name} {value:.10g}\n")

@@ -51,7 +51,7 @@ class RefinementConfig:
     step_betaC: float = 0.05
     step_betaD: float = 0.05
 
-    # Peak step sizes
+    # Peak step sizes (not used yet: peaks are not refined)
     step_peak_center_eV: float = 4.0
     step_peak_fwhm_eV: float = 1.0
     step_peak_height: float = 0.05
@@ -59,16 +59,19 @@ class RefinementConfig:
     # Physical constraints
     min_broaden_fwhm_eV: float = 0.0
     max_broaden_fwhm_eV: float = 40.0
+    # peak limits below are not used yet
     min_peak_fwhm_eV: float = 0.5
     max_peak_fwhm_eV: float = 30.0
     max_peak_height_factor: float = 1.0
 
     # Objective pieces
     hiQ_anchor_lambda: float = 1.0
+    # TODO(physics): smooth_lambda and peak_L1_lambda are not used by
+    # _objective, which weights the smoothness term by 1.
     smooth_lambda: float = 1e-5
     peak_L1_lambda: float = 1e-3
 
-    # Peak birth/death controls
+    # Peak birth/death controls (not used yet)
     birth_every: int = 4
     death_height_thresh: float = 1e-2
 

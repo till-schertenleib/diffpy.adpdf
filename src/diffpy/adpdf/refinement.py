@@ -2,6 +2,7 @@
 
 import math
 import os
+from typing import Dict
 
 import numpy as np
 
@@ -103,19 +104,37 @@ def run_adpdf_with_refinement(
             ),
         )
 
+    def snapshot() -> Dict[str, float]:
+        p = edge_model.params
+        return {
+            "rpoly": rpoly,
+            "dE_eV": p.dE_eV,
+            "scale": p.scale,
+            "fpp_offset": p.fpp_offset,
+            "broaden_fwhm_eV": p.broaden_fwhm_eV,
+            "fp_offset": fp_offset,
+            "alpha_C": alpha_C,
+            "alpha_D": alpha_D,
+            "beta_C": beta_C,
+            "beta_D": beta_D,
+        }
+
+    def restore(state: Dict[str, float]):
+        nonlocal alpha_C, alpha_D, beta_C, beta_D, fp_offset, rpoly
+        p = edge_model.params
+        rpoly = state["rpoly"]
+        p.dE_eV = state["dE_eV"]
+        p.scale = state["scale"]
+        p.fpp_offset = state["fpp_offset"]
+        p.broaden_fwhm_eV = state["broaden_fwhm_eV"]
+        fp_offset = state["fp_offset"]
+        alpha_C = state["alpha_C"]
+        alpha_D = state["alpha_D"]
+        beta_C = state["beta_C"]
+        beta_D = state["beta_D"]
+
     out, diag, obj = compute()
-    hist = [
-        RefinementHistory(
-            0,
-            obj,
-            {
-                "scale": edge_model.params.scale,
-                "dE_eV": edge_model.params.dE_eV,
-                "alpha_C": alpha_C,
-                "beta_C": beta_C,
-            },
-        )
-    ]
+    hist = [RefinementHistory(0, obj, snapshot())]
     os.makedirs(cfg.frame_dir, exist_ok=True)
     plot_frame(
         os.path.join(cfg.frame_dir, f"frame_{0:03d}.png"),
@@ -173,7 +192,9 @@ def run_adpdf_with_refinement(
             fp_offset += d
 
     best_obj = obj
-    # active_params = ["rpoly", "dE_eV", "scale", "alpha_C", "alpha_D", "beta_C", "beta_D"]
+    # TODO(physics): alpha_C (and possibly alpha_D) is excluded because it
+    # should not be refined for a very dilute resonant scatterer. Consider
+    # making the active parameter list configurable.
     active_params = [
         "rpoly",
         "dE_eV",
@@ -181,7 +202,7 @@ def run_adpdf_with_refinement(
         "alpha_D",
         "beta_C",
         "beta_D",
-    ]  # alpha_C (and possibly alpha_D) should be excluded for very dilute resonant scatterer
+    ]
 
     # If using theoretical Chantler tables, allow tuning the edge shape
     if getattr(edge_model, "exp_energy", None) is None:
@@ -194,29 +215,21 @@ def run_adpdf_with_refinement(
         for name in active_params:
             param_improved = False
             for sgn in (+1, -1):
+                # Restore from a snapshot rather than stepping back, since
+                # clipped parameters are not undone by the inverse step.
+                saved = snapshot()
                 tweak(name, sgn * steps[name])
                 out2, diag2, obj2 = compute()
                 if obj2 < best_obj:
                     out, diag, best_obj = out2, diag2, obj2
                     param_improved = True
                     cycle_improved = True
-                else:
-                    tweak(name, -sgn * steps[name])
+                    break
+                restore(saved)
             if not param_improved:
                 steps[name] *= 0.7
 
-        hist.append(
-            RefinementHistory(
-                it,
-                best_obj,
-                {
-                    "scale": edge_model.params.scale,
-                    "dE_eV": edge_model.params.dE_eV,
-                    "alpha_C": alpha_C,
-                    "beta_C": beta_C,
-                },
-            )
-        )
+        hist.append(RefinementHistory(it, best_obj, snapshot()))
         if (it % cfg.plot_every) == 0 or it == cfg.n_outer:
             plot_frame(
                 os.path.join(cfg.frame_dir, f"frame_{it:03d}.png"),

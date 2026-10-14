@@ -17,6 +17,7 @@ class _BaseEdgeModel:
     @staticmethod
     def to_eV(E: np.ndarray) -> np.ndarray:
         E = np.asarray(E, dtype=float)
+        # Heuristic: values below 1e3 are taken to be keV
         scale = 1.0 if np.nanmax(E) >= 1e3 else 1e3
         return E * scale
 
@@ -101,30 +102,22 @@ class EdgeModel(_BaseEdgeModel):
         self.exp_energy = None
         self.exp_fpp = None
 
-        # Properly placed loading logic
-        if self.params.experimental_xas_file:
-            if os.path.isfile(self.params.experimental_xas_file):
-                try:
-                    data = np.loadtxt(self.params.experimental_xas_file)
-                    raw_E = data[:, 0]
-                    if np.nanmax(raw_E) < 1e3:
-                        raw_E *= 1e3
-                    raw_E += float(self.params.experimental_xas_shift_eV)
+        # A requested XAS file that is missing or unreadable is an error,
+        # rather than a silent fallback to the Chantler tables.
+        xas_file = self.params.experimental_xas_file
+        if xas_file:
+            if not os.path.isfile(xas_file):
+                raise FileNotFoundError(f"XAS file '{xas_file}' not found.")
+            data = np.loadtxt(xas_file)
+            raw_E = data[:, 0]
+            if np.nanmax(raw_E) < 1e3:
+                raw_E *= 1e3
+            raw_E += float(self.params.experimental_xas_shift_eV)
 
-                    sort_idx = np.argsort(raw_E)
-                    self.exp_energy = raw_E[sort_idx]
-                    self.exp_fpp = data[sort_idx, 1]
-                    print(
-                        f"Loaded experimental XAS from {self.params.experimental_xas_file}"
-                    )
-                except Exception as e:
-                    print(
-                        f"Warning: Failed to load XAS file '{self.params.experimental_xas_file}': {e}"
-                    )
-            else:
-                print(
-                    f"Warning: XAS file '{self.params.experimental_xas_file}' not found. Falling back to Chantler."
-                )
+            sort_idx = np.argsort(raw_E)
+            self.exp_energy = raw_E[sort_idx]
+            self.exp_fpp = data[sort_idx, 1]
+            print(f"Loaded experimental XAS from {xas_file}")
 
     def fpp(self, E: np.ndarray) -> np.ndarray:
         E_eV = self.to_eV(E)

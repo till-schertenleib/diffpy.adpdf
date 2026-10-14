@@ -15,6 +15,7 @@ from diffpy.adpdf.edge import EdgeModel
 from diffpy.adpdf.fileio import (
     load_background,
     load_experimental_data,
+    save_refined_params,
     save_results,
     setup_directories,
 )
@@ -59,6 +60,7 @@ def run_pipeline(pc: PipelineConfig):
     )
 
     save_results(out, cfg)
+    save_refined_params(hist[-1].params, hist[-1].obj, cfg)
     plot_final_results(out, cfg)
     print(f"Results written to '{cfg.out_dir}'.")
     return out, diag, hist
